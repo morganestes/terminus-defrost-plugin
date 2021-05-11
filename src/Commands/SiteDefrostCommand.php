@@ -40,15 +40,13 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
    * 
    * @param string $site Site to unfreeze.
    */
-  public function defrost(string $site): self
+  public function defrost(string $site)
   {
     try {
-      $this->setSiteInstance($site);
+      $this->setSiteInstance($site)->runner();
     } catch (TerminusException $ex) {
       $this->io()->error($ex->getMessage());
     }
-
-    return $this->runner();
   }
 
   /**
@@ -74,10 +72,6 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
   {
     if (!empty($this->siteName)) {
       return (string) $this->siteName;
-    }
-
-    if ( $this->getSiteInstance() instanceof Site ){
-      return $this->getSiteInstance()->get('name');
     }
 
     return '';
@@ -120,7 +114,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
   protected function getSiteInstance(): Site
   {
     if (!$this->siteInstance instanceof Site) {
-      throw new TerminusException(sprintf('Could not find the site %s', $this->siteName));
+      throw new TerminusException(sprintf('Could not find the site %s', $this->getSiteName()));
     }
 
     return $this->siteInstance;
