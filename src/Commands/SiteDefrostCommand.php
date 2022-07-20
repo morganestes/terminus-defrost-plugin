@@ -151,16 +151,14 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
     }
 
     try {
-      $regexes = [
-        // URLs or name with leading env, up to the site name.
-        '/^(https?:\/\/)?(dev|test|live)-/i',
-        // Names with trailing ".env" after site name.
-        '/\.(dev|test|live)/i',
-        // Platform URLs and anything after.
-        '/\.pantheonsite\.io(?:.+)?/i'
-      ];
-
-      $siteName = preg_replace($regexes, '', $siteName);
+      // Try to clean up any URLs or environments passed with the site name.
+      $siteName = preg_replace('#https?:\/\/#', '', $siteName );
+      $siteName = preg_replace('#\.pantheonsite\.io/(?:.+)$#', '', $siteName);
+      /* Sites will only be frozen if they have a live env, so we're going to ignore 'test', 'live', and multidev envs for now.
+       * @todo Find a better RegEx to capture all env types while still allowing 'test-site-name', since many of our sites have
+       * 'test' or 'testing' as the site name even though 'test' is a reserved env name.
+       */
+      $siteName = preg_replace('#(^dev-)|(\.dev$)#', '', $siteName);
 
       if (empty($siteName)) {
         throw new TerminusException(sprintf('Could not validate site name %s.', $siteName));
