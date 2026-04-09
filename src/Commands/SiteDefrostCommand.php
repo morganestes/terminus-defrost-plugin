@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * Creates a Terminus command to defrost sites in Pantheon.
  */
@@ -12,10 +14,10 @@ use DateTimeInterface;
 use Exception;
 use GuzzleHttp\Exception\GuzzleException;
 use Pantheon\Terminus\Commands\{Site\SiteCommand, WorkflowProcessingTrait};
-use Symfony\Component\Console\Input\InputInterface;
 use Pantheon\Terminus\Exceptions\{TerminusException, TerminusNotFoundException, TerminusProcessException};
 use Pantheon\Terminus\Models\{Site, Workflow};
 use Psr\Container\{ContainerExceptionInterface, NotFoundExceptionInterface};
+use Symfony\Component\Console\Input\InputInterface;
 
 /**
  * Creates a Terminus command to defrost sites in Pantheon.
@@ -33,17 +35,6 @@ class SiteDefrostCommand extends SiteCommand
      * The current site instance.
      */
     private Site $site;
-
-    /**
-     * Sets up the runner.
-     *
-     * @hook init site:defrost
-     * @throws TerminusNotFoundException
-     */
-    public function preCommand(InputInterface $input): void
-    {
-        $this->setSite($input->getArgument('site'));
-    }
 
     /**
      * Gets the site name for this run.
@@ -115,11 +106,19 @@ class SiteDefrostCommand extends SiteCommand
         if (is_array($urlParts) && isset($urlParts['host'])) {
             // 2a. Handle Pantheon Dashboard URLs (e.g., https://dashboard.pantheon.io/sites/UUID)
             if (str_ends_with($urlParts['host'], 'dashboard.pantheon.io')) {
-                if (isset($urlParts['path']) && $uuid = $this->extractUUIDFromString($urlParts['path'])) {
-                    $siteIdentifier = $uuid;
+                if (isset($urlParts['path'])) {
+                    // New format: /workspace/{ws-uuid}/cms-site/{site-uuid}
+                    // The site UUID is the one that follows /cms-site/
+                    $uuidPattern = trim(self::UUID_REGEX, '/i');
+                    $siteUuidRegex = '/\/cms-site\/(' . $uuidPattern . ')/i';
+                    if (preg_match($siteUuidRegex, $urlParts['path'], $matches)) {
+                        $siteIdentifier = $matches[1];
+                    } // Old format: /sites/{site-uuid}
+                    elseif ($uuid = $this->extractUUIDFromString($urlParts['path'])) {
+                        $siteIdentifier = $uuid;
+                    }
                 }
-            }
-            // 2b. Handle Pantheon Platform URLs (e.g., https://dev-my-site.pantheonsite.io)
+            } // 2b. Handle Pantheon Platform URLs (e.g., https://dev-my-site.pantheonsite.io)
             elseif (str_ends_with($urlParts['host'], '.pantheonsite.io')) {
                 // Remove the .pantheonsite.io suffix.
                 $subdomain = str_replace('.pantheonsite.io', '', $urlParts['host']);
@@ -129,8 +128,7 @@ class SiteDefrostCommand extends SiteCommand
                 // which we don't have at this stage. This is a reasonable limitation.
                 $siteIdentifier = preg_replace('/^(dev|test|live)-/i', '', $subdomain);
             }
-        }
-        // 3. Handle <site>.<env> format if it's not a URL.
+        } // 3. Handle <site>.<env> format if it's not a URL.
         elseif (str_contains($input, '.')) {
             $lastDotPosition = strrpos($input, '.');
             // Consider the part before the last dot as the site name.
@@ -139,7 +137,9 @@ class SiteDefrostCommand extends SiteCommand
         }
 
         if (empty($siteIdentifier)) {
-            $this->io()->warning(sprintf('Could not determine a valid site name from "%s". Using original input.', $input));
+            $this->io()->warning(
+                sprintf('Could not determine a valid site name from "%s". Using original input.', $input)
+            );
             $siteIdentifier = $input;
         }
 
@@ -163,17 +163,14 @@ class SiteDefrostCommand extends SiteCommand
      * @param string $string The string to parse.
      * @return string|null The extracted UUID or null if no UUID is found.
      */
-    protected function extractUUIDFromString(string $string): ?string
+    protected function extractUUIDFromString(string $string): string|null
     {
-        if (preg_match(self::UUID_REGEX, $string, $matches)) {
-            return $matches[0];
-        }
-
-        return null;
+        /** @noinspection ReturnTernaryReplacementInspection */
+        return preg_match(self::UUID_REGEX, $string, $matches) ? $matches[0] : null;
     }
 
     /**
-     * Check to be sure it worked
+     * Checks to be sure it worked.
      *
      * @hook post-command site:defrost
      * @throws TerminusException
@@ -181,9 +178,12 @@ class SiteDefrostCommand extends SiteCommand
     public function done($result, CommandData $commandData): void
     {
         if ($this->io()->isDebug()) {
+            /** @noinspection ForgottenDebugOutputInspection */
+            /** @noinspection DebugFunctionUsageInspection */
             var_dump($result);
         }
         if ($this->io()->isVerbose()) {
+            /** @noinspection DebugFunctionUsageInspection */
             $this->stderr()->write(var_export($result, return: true));
         }
         if ($this->getSite()->isFrozen()) {
@@ -209,9 +209,11 @@ class SiteDefrostCommand extends SiteCommand
      */
     public function siteDefrost(string $site): void
     {
+        $this->setSite($site);
+
         if (!$this->getSite()->isFrozen()) {
             $this->io()->note([
-                "No need to thaw, {$site} isn't frozen.",
+                "No need to thaw, {$this->getSiteName()} isn't frozen.",
                 "If you don't see the site loading, try again later. It can take up to 15 minutes to thaw.",
                 sprintf('Visit https://dev-%s.pantheonsite.io/ to view the site.', $this->getSiteName()),
             ]);
@@ -233,12 +235,16 @@ class SiteDefrostCommand extends SiteCommand
             if ($startTime) {
                 $startDateTime = DateTimeImmutable::createFromFormat('U', (string)$startTime);
                 $logTime = $startDateTime->format(DateTimeInterface::RFC3339);
-                $this->io()->info(sprintf('[%s] Thaw started for %s.', $logTime, $site));
+                $this->io()->info(sprintf('[%s] Thaw started for %s.', $logTime, $this->getSiteName()));
             } else {
                 // Fallback if start time isn't available yet.
                 $logTime = $startDateTime->format(DateTimeInterface::RFC3339);
                 $this->io()->info(
-                    sprintf('[%s] Thaw started for %s. Waiting for workflow to begin...', $logTime, $site)
+                    sprintf(
+                        '[%s] Thaw started for %s. Waiting for workflow to begin...',
+                        $logTime,
+                        $this->getSiteName()
+                    )
                 );
             }
 
@@ -270,7 +276,7 @@ class SiteDefrostCommand extends SiteCommand
     /**
      * Reports the final status of the workflow.
      *
-     * @param Workflow $workflow               The workflow to report on.
+     * @param Workflow $workflow The workflow to report on.
      * @param DateTimeImmutable $startDateTime The time the process started.
      * @throws TerminusException
      */
@@ -314,8 +320,11 @@ class SiteDefrostCommand extends SiteCommand
      * @param string $format
      * @return string
      */
-    private function getElapsedMessage(DateTimeImmutable $startDateTime, ?int $finishTimestamp, string $format): string
-    {
+    private function getElapsedMessage(
+        DateTimeImmutable $startDateTime,
+        int|null $finishTimestamp,
+        string $format
+    ): string {
         $endDateTime = $finishTimestamp
             ? DateTimeImmutable::createFromFormat('U', (string)$finishTimestamp)
             : new DateTimeImmutable();
