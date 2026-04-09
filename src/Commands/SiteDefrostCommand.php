@@ -6,268 +6,324 @@
 
 namespace MorganEstes\Terminus\Commands;
 
-use Pantheon\Terminus\Commands\Site\SiteCommand;
-use Pantheon\Terminus\Site\SiteAwareInterface;
-use Pantheon\Terminus\Site\SiteAwareTrait;
-use Pantheon\Terminus\Models\Site;
-use Pantheon\Terminus\Exceptions\TerminusException;
+use Consolidation\AnnotatedCommand\CommandData;
+use DateTimeImmutable;
+use DateTimeInterface;
+use Exception;
+use GuzzleHttp\Exception\GuzzleException;
+use Pantheon\Terminus\Commands\{Site\SiteCommand, WorkflowProcessingTrait};
+use Symfony\Component\Console\Input\InputInterface;
+use Pantheon\Terminus\Exceptions\{TerminusException, TerminusNotFoundException, TerminusProcessException};
+use Pantheon\Terminus\Models\{Site, Workflow};
+use Psr\Container\{ContainerExceptionInterface, NotFoundExceptionInterface};
 
-class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
+/**
+ * Creates a Terminus command to defrost sites in Pantheon.
+ */
+class SiteDefrostCommand extends SiteCommand
 {
-  use SiteAwareTrait;
+    use WorkflowProcessingTrait;
 
-  /**
-   * The site identifier used for commands.
-   *
-   * @var string
-   */
-  private $siteName;
+    /**
+     * The current site instance.
+     */
+    private Site $site;
 
-  /**
-   * The current site instance.
-   * 
-   * @var Site
-   */
-  private $siteInstance;
-
-  /**
-   * Unfreezes a Pantheon website for a given name, URL, or Site ID.
-   *
-   * @authorize
-   *
-   * @command site:defrost
-   * @aliases site:thaw, site:unfreeze
-   * @usage terminus site:defrost <site>
-   * 
-   * @param string $site Site to unfreeze.
-   */
-  public function defrost(string $site)
-  {
-    try {
-      $this->setSiteInstance($site)->runner();
-    } catch (TerminusException $ex) {
-      $this->io()->error($ex->getMessage());
-    }
-  }
-
-  /**
-   * Sets the normalized site name for this instance.
-   *
-   * @param string $siteName The name, URL, or ID of the site.
-   * @return $this
-   */
-  protected function setSiteName(string $siteName): self
-  {
-    $this->siteName = $this->normalizeSiteName($siteName);
-
-    return $this;
-  }
-
-  /**
-   * Gets the site name for this run.
-   * 
-   * @return string The normalized site name.
-   * @throws Exception If the site name isn't set.
-   */
-  protected function getSiteName(): string
-  {
-    if (!empty($this->siteName)) {
-      return (string) $this->siteName;
+    /**
+     * Sets up the runner.
+     *
+     * @hook init site:defrost
+     * @throws TerminusNotFoundException
+     */
+    public function preCommand(InputInterface $input): void
+    {
+        $this->setSite($input->getArgument('site'));
     }
 
-    return '';
-  }
-
-  /**
-   * Sets up an instance of the Pantheon site.
-   *
-   * @param string $siteName The site name, URL, or ID.
-   * @return $this
-   */
-  protected function setSiteInstance(string $siteName): self
-  {
-    try {
-      $this->setSiteName($siteName);
-
-      if (!$this->siteInstance instanceof Site) {
-        $this->siteInstance = $this->getSite($this->getSiteName());
-      }
-
-      if (!$this->siteInstance instanceof Site) {
-        throw new TerminusException(sprintf('Cannot find site %s', $siteName));
-      }
-
-      // Re-set the site name with the one in Pantheon's data.
-      // $this->setSiteName($this->siteInstance->get('name'));
-    } catch (TerminusException $ex) {
-      $this->io()->error($ex->getMessage());
+    /**
+     * Gets the site name for this run.
+     *
+     * @return string The normalized site name.
+     */
+    protected function getSiteName(): string
+    {
+        return $this->site->getName();
     }
 
-    return $this;
-  }
+    /**
+     * Sets up an instance of the Pantheon site.
+     *
+     * @param string $nameOrUUID The site name or UUID.
+     * @throws TerminusNotFoundException
+     */
+    protected function setSite(string $nameOrUUID): void
+    {
+        $io = $this->io();
+        $logger = $this->log();
 
-  /**
-   * Gets the current instance of the site for this command run.
-   * 
-   * @return Site The Pantheon site instance.
-   * @throws Exception If the site can't be found.
-   */
-  protected function getSiteInstance(): Site
-  {
-    if (!$this->siteInstance instanceof Site) {
-      throw new TerminusException(sprintf('Could not find the site %s', $this->getSiteName()));
+        try {
+            $this->site = $this->sites()->get($nameOrUUID);
+        } catch (GuzzleException|TerminusException|NotFoundExceptionInterface|ContainerExceptionInterface $e) {
+            $logger->critical('Could not find the site identified by {siteName}.', [
+                'siteName' => $nameOrUUID,
+            ]);
+            $io->error($e->getMessage());
+
+            if ($io->isDebug()) {
+                $logger->debug($e->getTraceAsString());
+            }
+
+            throw new TerminusNotFoundException(message: $e->getMessage(), code: $e->getCode());
+        }
     }
 
-    return $this->siteInstance;
-  }
-
-  /**
-   * Gets the site name from a string.
-   * 
-   * @param string $maybeSiteName The URL, UUID, or name-like string.
-   * @return string The name for use in site commands.
-   * @throws Exception If a slug can't be generated.
-   */
-  public function normalizeSiteName(string $maybeSiteName): string
-  {
-    $siteName = trim($maybeSiteName);
-
-    // No need to continue if we already have a site slug that matches what's trying to be set.
-    if (!empty($this->getSiteName()) && $this->getSiteName() === $siteName) {
-      return $siteName;
+    /**
+     * Gets the current instance of the site for this command run.
+     *
+     * @return Site The Pantheon site instance.
+     */
+    protected function getSite(): Site
+    {
+        return $this->site;
     }
 
-    // If given a Pantheon dashboard link, try to extract the UUID.
-    // If there's not a UUID in there, it'll just revert back to the passed $maybeSiteName.
-    $siteName = $this->maybeGetUUIDFromURL($siteName);
+    /**
+     * Validates and normalizes the input as a site name.
+     *
+     * @hook validate site:defrost
+     *
+     * @param CommandData $commandData
+     */
+    public function normalizeSiteName(CommandData $commandData): void
+    {
+        $arg1 = $commandData->input()->getFirstArgument();
+        $siteName = $arg1;
 
-    // Assume UUID format is a Pantheon Site ID and try to get the name directly.
-    if ($this->isUUID($siteName)) {
-      $site = $this->getSite($siteName);
-      if ($site instanceof Site) {
-        return $site->get('name');
-      }
-      return $siteName; // Revert to the passed UUID if we can't get the name. That probably means it's invalid, though.
+        // Working our way down from worst to first...
+        if (str_starts_with($arg1, 'http')) {
+            $maybeUUID = $this->maybeGetUUIDFromURL($arg1);
+            if ($this->isUUID($maybeUUID)) {
+                $siteName = $maybeUUID;
+            }
+        }
+
+        // If given a Pantheon dashboard link, try to extract the UUID.
+        // If there's not a UUID in there, it'll just revert back to the passed $arg1.
+
+        // Assume UUID format is a Pantheon Site ID and try to get the name directly.
+
+// @todo finish cleaning up the refactoring and find a better function for parsing the site name.
+        try {
+            // Try to clean up any URLs or environments passed with the site name.
+            $siteName = preg_replace('#^https?://#', '', $siteName);
+            $siteName = preg_replace('#\.pantheonsite\.io/.*$#', '', $siteName);
+            /* Sites will only be frozen if they have a live env, so we're going to ignore 'test', 'live', and multidev envs for now.
+             * @todo Find a better RegEx to capture all env types while still allowing 'test-site-name', since many of our sites have
+             * 'test' or 'testing' as the site name even though 'test' is a reserved env name.
+             */
+            $siteName = preg_replace('#(^dev-)|(\.dev$)#', '', $siteName);
+
+            if (empty($siteName)) {
+                throw new TerminusException(sprintf('Could not validate site name %s.', $siteName));
+            }
+        } catch (TerminusException $ex) {
+            $this->io()->error($ex->getMessage());
+        }
+
+
+        $commandData->input()->setArgument('site', $siteName);
     }
 
-    try {
-      // Try to clean up any URLs or environments passed with the site name.
-      $siteName = preg_replace('#https?:\/\/#', '', $siteName );
-      $siteName = preg_replace('#\.pantheonsite\.io/(?:.+)$#', '', $siteName);
-      /* Sites will only be frozen if they have a live env, so we're going to ignore 'test', 'live', and multidev envs for now.
-       * @todo Find a better RegEx to capture all env types while still allowing 'test-site-name', since many of our sites have
-       * 'test' or 'testing' as the site name even though 'test' is a reserved env name.
-       */
-      $siteName = preg_replace('#(^dev-)|(\.dev$)#', '', $siteName);
+    /**
+     * Checks to see if this is a valid UUID format. It does not check for Site ID validity.
+     *
+     * @param string $maybeUUID The string to check.
+     * @return bool Whether this matches the UUID format.
+     */
+    public function isUUID(string $maybeUUID): bool
+    {
+        // This regex can probably be shortened, but this one only takes 16 steps.
+        $regexp = '/[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}/i';
 
-      if (empty($siteName)) {
-        throw new TerminusException(sprintf('Could not validate site name %s.', $siteName));
-      }
-    } catch (TerminusException $ex) {
-      $this->io()->error($ex->getMessage());
+        return (preg_match($regexp, trim($maybeUUID)) === 1);
     }
 
-    return $siteName;
-  }
+    /**
+     * Tries to extract a UUID from a URL.
+     *
+     * This is most useful when given a link to a dashboard page
+     *
+     * @param string $url The URL string to parse.
+     * @return string The extracted UUID or the original URL if no UUID is found.
+     */
+    public function maybeGetUUIDFromURL(string $url): string
+    {
+        $url = trim($url);
+        // 18 steps when given a full dashboard URL.
+        $regexp = '/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/i';
 
-  /**
-   * Checks to see if this is a valid UUID format. It does not check for Site ID validity.
-   * 
-   * @param string $maybeUUID The string to check.
-   * @return bool Whether this matches the UUID format.
-   */
-  public function isUUID(string $maybeUUID): bool
-  {
-    // This regex can probably be shortened, but this one only takes 16 steps.
-    $regexp = '/[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}/i';
+        preg_match($regexp, $url, $matches);
 
-    return (1 === preg_match($regexp, trim($maybeUUID)));
-  }
+        if (!empty($matches) && $this->isUUID($matches[0])) {
+            return $matches[0];
+        }
 
-  /**
-   * Tries to extract a UUID from a URL.
-   * 
-   * This is most useful when given a link to a dashboard page
-   * @param string $url 
-   * @return string 
-   */
-  public function maybeGetUUIDFromURL(string $url): string
-  {
-    $url = trim($url);
-    // 18 steps when given a full dashboard URL.
-    $regexp = '/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/i';
-
-    preg_match($regexp, $url, $matches);
-
-    if (!empty($matches) && $this->isUUID($matches[0])) {
-      return $matches[0];
+        return $url;
     }
 
-    return $url;
-  }
+    /**
+     * Check to be sure it worked
+     *
+     * @hook post-command site:defrost
+     * @throws TerminusException
+     */
+    public function done($result, CommandData $commandData): void
+    {
+        if ($this->io()->isDebug()) {
+            var_dump($result);
+        }
+        if ($this->io()->isVerbose()) {
+            $this->stderr()->write(var_export($result, return: true));
+        }
+        if ($this->getSite()->isFrozen()) {
+            throw new TerminusException('{site} is still frozen.', ['site' => $this->getSiteName()]);
+        }
 
-  /**
-   * Runs the command to unfreeze a site.
-   * 
-   * @return $this
-   * @throws Exception If the workflow fails.
-   */
-  private function thaw(): self
-  {
-    try {
-      $this->getSiteInstance()->getWorkflows()->create('unfreeze_site');
-    } catch (TerminusException $ex) {
-      $this->io()->error($ex->getMessage());
+        $chilly = $this->getSite()->isFrozen() ? 'yes' : 'no';
+        $this->io()->note(sprintf('Is %s frozen? %s', $this->getSiteName(), $chilly));
     }
 
-    return $this;
-  }
+    /**
+     * Unfreezes a Pantheon website for a given name, URL, or Site ID.
+     *
+     * @authorize
+     *
+     * @command site:defrost
+     * @aliases site:thaw, site:unfreeze, thaw
+     * @usage   terminus site:defrost <site>
+     *
+     * @param string $site Site name, URL, or ID to unfreeze.
+     * @throws TerminusException
+     * @throws TerminusProcessException
+     */
+    public function siteDefrost(string $site): void
+    {
+        if (!$this->getSite()->isFrozen()) {
+            $this->io()->note([
+                "No need to thaw, {$site} isn't frozen.",
+                "If you don't see the site loading, try again later. It can take up to 15 minutes to thaw.",
+                sprintf('Visit https://dev-%s.pantheonsite.io/ to view the site.', $this->getSiteName()),
+            ]);
+            return;
+        }
 
-  /**
-   * Shows a friendly message about the frozen status of the site.
-   * 
-   * @return $this 
-   */
-  private function showFrozenMessage(): self
-  {
-    $chilly = $this->getSiteInstance()->isFrozen() ? 'yes' : 'no';
-    $this->io()->note(sprintf('Is %1$s frozen? %2$s', $this->siteName, $chilly));
+        $this->io()->info(sprintf('Thawing %s...', $this->getSiteName()));
 
-    return $this;
-  }
+        $workflow = $this->getSite()->getWorkflows()->create('unfreeze_site');
+        // Default to now, in case we can't get a start time from the workflow.
+        $startDateTime = new DateTimeImmutable();
 
-  /**
-   * Runs the commands to unfreeze a site.
-   *
-   * @return $this
-   */
-  private function runner()
-  {
-    $link_msg = sprintf('Visit https://dev-%s.pantheonsite.io/ to view the site.', $this->getSiteName());
+        try {
+            // It can take a moment for the workflow to be created and have a start time.
+            sleep(2);
+            $workflow->fetch();
+            $startTime = $workflow->getStartedAt();
 
-    try {
-      if (!$this->getSiteInstance()->isFrozen()) {
-        $messages = [
-          "No need to thaw, {$this->getSiteName()} isn't frozen.",
-          "If you don't see the site loading, try again later. It can take up to 15 minutes to thaw.",
-          $link_msg,
-        ];
-        $this->io()->block($messages, 'Note', 'comment');
-      } else {
-        $messages = [
-          sprintf('Thawing %s...', $this->getSiteName()),
-          $link_msg,
-        ];
-        $this->io()->block($messages, 'Note', 'comment');
+            if ($startTime) {
+                $startDateTime = DateTimeImmutable::createFromFormat('U', (string)$startTime);
+                $logTime = $startDateTime->format(DateTimeInterface::RFC3339);
+                $this->io()->info(sprintf('[%s] Thaw started for %s.', $logTime, $site));
+            } else {
+                // Fallback if start time isn't available yet.
+                $logTime = $startDateTime->format(DateTimeInterface::RFC3339);
+                $this->io()->info(
+                    sprintf('[%s] Thaw started for %s. Waiting for workflow to begin...', $logTime, $site)
+                );
+            }
 
-        $this
-          ->thaw()
-          ->showFrozenMessage();
-      }
-    } catch (TerminusException $ex) {
-      $this->io()->error($ex->getMessage());
+            $this->pollWorkflow($workflow);
+        } catch (Exception $ex) {
+            $this->io()->error($ex->getMessage());
+            throw new TerminusProcessException(message: $ex->getMessage(), code: $ex->getCode());
+        } finally {
+            $this->reportWorkflowStatus($workflow, $startDateTime);
+        }
     }
 
-    return $this;
-  }
+    /**
+     * Polls the workflow until it is finished.
+     *
+     * @param Workflow $workflow The workflow to poll.
+     */
+    private function pollWorkflow(Workflow $workflow): void
+    {
+        do {
+            sleep(30);
+            $workflow->fetch(); // Refresh workflow data to get the latest status.
+
+            $logTime = (new DateTimeImmutable())->format(DateTimeInterface::RFC3339);
+            $this->io()->info(sprintf('[%s] %s', $logTime, $workflow->getStatus()));
+        } while (!$workflow->isFinished());
+    }
+
+    /**
+     * Reports the final status of the workflow.
+     *
+     * @param Workflow $workflow The workflow to report on.
+     * @param DateTimeImmutable $startDateTime The time the process started.
+     */
+    private function reportWorkflowStatus(Workflow $workflow, DateTimeImmutable $startDateTime): void
+    {
+        // Ensure we have the final workflow state.
+        $workflow->fetch();
+
+        $finalLogTime = (new DateTimeImmutable())->format(DateTimeInterface::RFC3339);
+
+        if ($workflow->isSuccessful()) {
+            $elapsedMessage = $this->getElapsedMessage(
+                $startDateTime,
+                $workflow->getFinishedAt(),
+                'completed in %s'
+            );
+            $this->io()->success([
+                sprintf('[%s] Unfreeze successful! (%s)', $finalLogTime, $elapsedMessage),
+                $workflow->getMessage(),
+                "Dashboard URL: {$this->getSite()->dashboardUrl()}",
+                "Site URL: https://dev-{$this->getSiteName()}.pantheonsite.io/",
+            ]);
+        } else {
+            $elapsedMessage = $this->getElapsedMessage(
+                $startDateTime,
+                null, // The operation failed, so there's no finish time.
+                'failed after %s'
+            );
+            $this->io()->error([
+                sprintf('[%s] The unfreeze operation failed. (%s)', $finalLogTime, $elapsedMessage),
+                $workflow->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Calculates and formats the elapsed time message.
+     *
+     * @param DateTimeImmutable $startDateTime
+     * @param int|null $finishTimestamp
+     * @param string $format
+     * @return string
+     */
+    private function getElapsedMessage(DateTimeImmutable $startDateTime, ?int $finishTimestamp, string $format): string
+    {
+        $endDateTime = $finishTimestamp
+            ? DateTimeImmutable::createFromFormat('U', (string)$finishTimestamp)
+            : new DateTimeImmutable();
+
+        if (!$endDateTime) {
+            // Fallback if createFromFormat fails.
+            $endDateTime = new DateTimeImmutable();
+        }
+
+        $interval = $endDateTime->diff($startDateTime);
+        return sprintf($format, $interval->format('%I minutes and %S seconds'));
+    }
 }
