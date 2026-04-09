@@ -25,6 +25,11 @@ class SiteDefrostCommand extends SiteCommand
     use WorkflowProcessingTrait;
 
     /**
+     * A regular expression for matching a UUID.
+     */
+    private const UUID_REGEX = '/[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}/i';
+
+    /**
      * The current site instance.
      */
     private Site $site;
@@ -96,42 +101,49 @@ class SiteDefrostCommand extends SiteCommand
      */
     public function normalizeSiteName(CommandData $commandData): void
     {
-        $arg1 = $commandData->input()->getFirstArgument();
-        $siteName = $arg1;
+        $input = trim($commandData->input()->getFirstArgument());
+        $siteIdentifier = $input;
 
-        // Working our way down from worst to first...
-        if (str_starts_with($arg1, 'http')) {
-            $maybeUUID = $this->maybeGetUUIDFromURL($arg1);
-            if ($this->isUUID($maybeUUID)) {
-                $siteName = $maybeUUID;
-            }
+        // 1. Check if it's a UUID. If so, we're done.
+        if ($this->isUUID($input)) {
+            $commandData->input()->setArgument('site', $input);
+            return;
         }
 
-        // If given a Pantheon dashboard link, try to extract the UUID.
-        // If there's not a UUID in there, it'll just revert back to the passed $arg1.
-
-        // Assume UUID format is a Pantheon Site ID and try to get the name directly.
-
-// @todo finish cleaning up the refactoring and find a better function for parsing the site name.
-        try {
-            // Try to clean up any URLs or environments passed with the site name.
-            $siteName = preg_replace('#^https?://#', '', $siteName);
-            $siteName = preg_replace('#\.pantheonsite\.io/.*$#', '', $siteName);
-            /* Sites will only be frozen if they have a live env, so we're going to ignore 'test', 'live', and multidev envs for now.
-             * @todo Find a better RegEx to capture all env types while still allowing 'test-site-name', since many of our sites have
-             * 'test' or 'testing' as the site name even though 'test' is a reserved env name.
-             */
-            $siteName = preg_replace('#(^dev-)|(\.dev$)#', '', $siteName);
-
-            if (empty($siteName)) {
-                throw new TerminusException(sprintf('Could not validate site name %s.', $siteName));
+        // 2. Check if it's a URL and parse it.
+        $urlParts = parse_url($input);
+        if (is_array($urlParts) && isset($urlParts['host'])) {
+            // 2a. Handle Pantheon Dashboard URLs (e.g., https://dashboard.pantheon.io/sites/UUID)
+            if (str_ends_with($urlParts['host'], 'dashboard.pantheon.io')) {
+                if (isset($urlParts['path']) && $uuid = $this->extractUUIDFromString($urlParts['path'])) {
+                    $siteIdentifier = $uuid;
+                }
             }
-        } catch (TerminusException $ex) {
-            $this->io()->error($ex->getMessage());
+            // 2b. Handle Pantheon Platform URLs (e.g., https://dev-my-site.pantheonsite.io)
+            elseif (str_ends_with($urlParts['host'], '.pantheonsite.io')) {
+                // Remove the .pantheonsite.io suffix.
+                $subdomain = str_replace('.pantheonsite.io', '', $urlParts['host']);
+                // This regex is intentionally simple. It removes `dev-`, `test-`, or `live-` from the start.
+                // It does not handle multidev environments perfectly, as their names are variable.
+                // For `multidev-foo-bar-site`, it would need to know the site name `bar-site` to parse correctly,
+                // which we don't have at this stage. This is a reasonable limitation.
+                $siteIdentifier = preg_replace('/^(dev|test|live)-/i', '', $subdomain);
+            }
+        }
+        // 3. Handle <site>.<env> format if it's not a URL.
+        elseif (str_contains($input, '.')) {
+            $lastDotPosition = strrpos($input, '.');
+            // Consider the part before the last dot as the site name.
+            // This is more robust than explode() for site names containing dots.
+            $siteIdentifier = substr($input, 0, $lastDotPosition);
         }
 
+        if (empty($siteIdentifier)) {
+            $this->io()->warning(sprintf('Could not determine a valid site name from "%s". Using original input.', $input));
+            $siteIdentifier = $input;
+        }
 
-        $commandData->input()->setArgument('site', $siteName);
+        $commandData->input()->setArgument('site', $siteIdentifier);
     }
 
     /**
@@ -142,33 +154,22 @@ class SiteDefrostCommand extends SiteCommand
      */
     public function isUUID(string $maybeUUID): bool
     {
-        // This regex can probably be shortened, but this one only takes 16 steps.
-        $regexp = '/[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}/i';
-
-        return (preg_match($regexp, trim($maybeUUID)) === 1);
+        return (preg_match(self::UUID_REGEX, trim($maybeUUID)) === 1);
     }
 
     /**
-     * Tries to extract a UUID from a URL.
+     * Tries to extract a UUID from a string.
      *
-     * This is most useful when given a link to a dashboard page
-     *
-     * @param string $url The URL string to parse.
-     * @return string The extracted UUID or the original URL if no UUID is found.
+     * @param string $string The string to parse.
+     * @return string|null The extracted UUID or null if no UUID is found.
      */
-    public function maybeGetUUIDFromURL(string $url): string
+    protected function extractUUIDFromString(string $string): ?string
     {
-        $url = trim($url);
-        // 18 steps when given a full dashboard URL.
-        $regexp = '/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/i';
-
-        preg_match($regexp, $url, $matches);
-
-        if (!empty($matches) && $this->isUUID($matches[0])) {
+        if (preg_match(self::UUID_REGEX, $string, $matches)) {
             return $matches[0];
         }
 
-        return $url;
+        return null;
     }
 
     /**
@@ -269,8 +270,9 @@ class SiteDefrostCommand extends SiteCommand
     /**
      * Reports the final status of the workflow.
      *
-     * @param Workflow $workflow The workflow to report on.
+     * @param Workflow $workflow               The workflow to report on.
      * @param DateTimeImmutable $startDateTime The time the process started.
+     * @throws TerminusException
      */
     private function reportWorkflowStatus(Workflow $workflow, DateTimeImmutable $startDateTime): void
     {
