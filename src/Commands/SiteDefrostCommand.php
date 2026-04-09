@@ -92,7 +92,7 @@ class SiteDefrostCommand extends SiteCommand
      */
     public function normalizeSiteName(CommandData $commandData): void
     {
-        $input = trim($commandData->input()->getFirstArgument());
+        $input = trim($commandData->input()->getArgument('site'));
         $siteIdentifier = $input;
 
         // 1. Check if it's a UUID. If so, we're done.
@@ -186,6 +186,14 @@ class SiteDefrostCommand extends SiteCommand
             /** @noinspection DebugFunctionUsageInspection */
             $this->stderr()->write(var_export($result, return: true));
         }
+
+        // If the $site property is not initialized, it means the command failed
+        // before the main logic could run (e.g., site not found).
+        // In this case, we should just exit gracefully as the error has already
+        // been displayed.
+        if (!isset($this->site)) {
+            return;
+        }
         if ($this->getSite()->isFrozen()) {
             throw new TerminusException('{site} is still frozen.', ['site' => $this->getSiteName()]);
         }
@@ -200,7 +208,7 @@ class SiteDefrostCommand extends SiteCommand
      * @authorize
      *
      * @command site:defrost
-     * @aliases site:thaw, site:unfreeze, thaw
+     * @aliases site:thaw, site:unfreeze
      * @usage   terminus site:defrost <site>
      *
      * @param string $site Site name, URL, or ID to unfreeze.
