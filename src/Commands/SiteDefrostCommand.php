@@ -16,8 +16,8 @@ use GuzzleHttp\Exception\GuzzleException;
 use Pantheon\Terminus\Commands\{Site\SiteCommand, WorkflowProcessingTrait};
 use Pantheon\Terminus\Exceptions\{TerminusException, TerminusNotFoundException, TerminusProcessException};
 use Pantheon\Terminus\Models\{Site, Workflow};
-use Psr\Container\{ContainerExceptionInterface, NotFoundExceptionInterface};
 use Symfony\Component\Console\Input\InputInterface;
+use Psr\Container\{ContainerExceptionInterface, NotFoundExceptionInterface};
 
 /**
  * Creates a Terminus command to defrost sites in Pantheon.
@@ -86,36 +86,32 @@ class SiteDefrostCommand extends SiteCommand
     /**
      * Validates and normalizes the input as a site name.
      *
-     * @hook validate site:defrost
+     * @hook init site:defrost
      *
-     * @param CommandData $commandData
+     * @param \Symfony\Component\Console\Input\InputInterface $input
      */
-    public function normalizeSiteName(CommandData $commandData): void
+    public function normalizeSiteName(InputInterface $input): void
     {
-        $input = trim($commandData->input()->getArgument('site'));
-        $siteIdentifier = $input;
+        $originalInput = trim($input->getArgument('site'));
+        $siteIdentifier = $originalInput;
 
         // 1. Check if it's a UUID. If so, we're done.
-        if ($this->isUUID($input)) {
-            $commandData->input()->setArgument('site', $input);
+        if ($this->isUUID($originalInput)) {
+            $input->setArgument('site', $originalInput);
             return;
         }
 
         // 2. Check if it's a URL and parse it.
-        $urlParts = parse_url($input);
+        $urlParts = parse_url($originalInput);
         if (is_array($urlParts) && isset($urlParts['host'])) {
             // 2a. Handle Pantheon Dashboard URLs (e.g., https://dashboard.pantheon.io/sites/UUID)
             if (str_ends_with($urlParts['host'], 'dashboard.pantheon.io')) {
                 if (isset($urlParts['path'])) {
-                    // New format: /workspace/{ws-uuid}/cms-site/{site-uuid}
-                    // The site UUID is the one that follows /cms-site/
+                    // Match /sites/{uuid} or /.../cms-site/{uuid} while ignoring workspace UUIDs.
                     $uuidPattern = trim(self::UUID_REGEX, '/i');
-                    $siteUuidRegex = '/\/cms-site\/(' . $uuidPattern . ')/i';
-                    if (preg_match($siteUuidRegex, $urlParts['path'], $matches)) {
+                    $dashboardPathRegex = '#/(?:sites|cms-site)/(' . $uuidPattern . ')#i';
+                    if (preg_match($dashboardPathRegex, $urlParts['path'], $matches)) {
                         $siteIdentifier = $matches[1];
-                    } // Old format: /sites/{site-uuid}
-                    elseif ($uuid = $this->extractUUIDFromString($urlParts['path'])) {
-                        $siteIdentifier = $uuid;
                     }
                 }
             } // 2b. Handle Pantheon Platform URLs (e.g., https://dev-my-site.pantheonsite.io)
@@ -129,21 +125,21 @@ class SiteDefrostCommand extends SiteCommand
                 $siteIdentifier = preg_replace('/^(dev|test|live)-/i', '', $subdomain);
             }
         } // 3. Handle <site>.<env> format if it's not a URL.
-        elseif (str_contains($input, '.')) {
-            $lastDotPosition = strrpos($input, '.');
+        elseif (str_contains($originalInput, '.')) {
+            $lastDotPosition = strrpos($originalInput, '.');
             // Consider the part before the last dot as the site name.
             // This is more robust than explode() for site names containing dots.
-            $siteIdentifier = substr($input, 0, $lastDotPosition);
+            $siteIdentifier = substr($originalInput, 0, $lastDotPosition);
         }
 
         if (empty($siteIdentifier)) {
             $this->io()->warning(
-                sprintf('Could not determine a valid site name from "%s". Using original input.', $input)
+                sprintf('Could not determine a valid site name from "%s". Using original input.', $originalInput)
             );
-            $siteIdentifier = $input;
+            $siteIdentifier = $originalInput;
         }
 
-        $commandData->input()->setArgument('site', $siteIdentifier);
+        $input->setArgument('site', $siteIdentifier);
     }
 
     /**
@@ -155,18 +151,6 @@ class SiteDefrostCommand extends SiteCommand
     public function isUUID(string $maybeUUID): bool
     {
         return (preg_match(self::UUID_REGEX, trim($maybeUUID)) === 1);
-    }
-
-    /**
-     * Tries to extract a UUID from a string.
-     *
-     * @param string $string The string to parse.
-     * @return string|null The extracted UUID or null if no UUID is found.
-     */
-    protected function extractUUIDFromString(string $string): string|null
-    {
-        /** @noinspection ReturnTernaryReplacementInspection */
-        return preg_match(self::UUID_REGEX, $string, $matches) ? $matches[0] : null;
     }
 
     /**
@@ -217,8 +201,6 @@ class SiteDefrostCommand extends SiteCommand
      */
     public function siteDefrost(string $site): void
     {
-        $this->setSite($site);
-
         if (!$this->getSite()->isFrozen()) {
             $this->io()->note([
                 "No need to thaw, {$this->getSiteName()} isn't frozen.",
