@@ -27,15 +27,19 @@
   },
   "license": "MIT",
   "require": {
-    "php": "8.2-stable - 8.4-stable"
+    "php": "~8.2"
   },
   "require-dev": {
     "pantheon-systems/terminus": "^3.0 || ^4.0"
   },
   "autoload": {
-    "psr-4": { "MorganEstes\\Terminus\\": "src" }
+    "psr-4": {
+      "MorganEstes\\Terminus\\": "src"
+    }
   },
   "extra": {
-    "terminus": { "compatible-version": "^3.0 || ^4.0" }
+    "terminus": {
+      "compatible-version": "^3.0 || ^4.0"
+    }
   }
 }
