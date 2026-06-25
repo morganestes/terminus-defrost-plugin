@@ -12,6 +12,7 @@ use Pantheon\Terminus\Site\SiteAwareTrait;
 use Pantheon\Terminus\Models\Site;
 use Pantheon\Terminus\Exceptions\TerminusException;
 
+/** @package MorganEstes\Terminus\Commands */
 class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 {
   use SiteAwareTrait;
@@ -25,7 +26,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
   /**
    * The current site instance.
-   * 
+   *
    * @var Site
    */
   private $siteInstance;
@@ -38,7 +39,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
    * @command site:defrost
    * @aliases site:thaw, site:unfreeze
    * @usage terminus site:defrost <site>
-   * 
+   *
    * @param string $site Site to unfreeze.
    */
   public function defrost(string $site)
@@ -54,7 +55,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
    * Sets the normalized site name for this instance.
    *
    * @param string $siteName The name, URL, or ID of the site.
-   * @return $this
+   * @return self
    */
   protected function setSiteName(string $siteName): self
   {
@@ -65,9 +66,9 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
   /**
    * Gets the site name for this run.
-   * 
+   *
    * @return string The normalized site name.
-   * @throws Exception If the site name isn't set.
+   * @throws TerminusException If the site name isn't set.
    */
   protected function getSiteName(): string
   {
@@ -82,7 +83,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
    * Sets up an instance of the Pantheon site.
    *
    * @param string $siteName The site name, URL, or ID.
-   * @return $this
+   * @return self
    */
   protected function setSiteInstance(string $siteName): self
   {
@@ -90,7 +91,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
       $this->setSiteName($siteName);
 
       if (!$this->siteInstance instanceof Site) {
-        $this->siteInstance = $this->getSite($this->getSiteName());
+        $this->siteInstance = $this->getSiteById($this->getSiteName());
       }
 
       if (!$this->siteInstance instanceof Site) {
@@ -108,9 +109,9 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
   /**
    * Gets the current instance of the site for this command run.
-   * 
+   *
    * @return Site The Pantheon site instance.
-   * @throws Exception If the site can't be found.
+   * @throws TerminusException If the site can't be found.
    */
   protected function getSiteInstance(): Site
   {
@@ -123,10 +124,10 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
   /**
    * Gets the site name from a string.
-   * 
+   *
    * @param string $maybeSiteName The URL, UUID, or name-like string.
    * @return string The name for use in site commands.
-   * @throws Exception If a slug can't be generated.
+   * @throws TerminusException If a slug can't be generated.
    */
   public function normalizeSiteName(string $maybeSiteName): string
   {
@@ -143,7 +144,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
     // Assume UUID format is a Pantheon Site ID and try to get the name directly.
     if ($this->isUUID($siteName)) {
-      $site = $this->getSite($siteName);
+      $site = $this->getSiteById($siteName);
       if ($site instanceof Site) {
         return $site->get('name');
       }
@@ -172,7 +173,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
   /**
    * Checks to see if this is a valid UUID format. It does not check for Site ID validity.
-   * 
+   *
    * @param string $maybeUUID The string to check.
    * @return bool Whether this matches the UUID format.
    */
@@ -186,10 +187,10 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
   /**
    * Tries to extract a UUID from a URL.
-   * 
+   *
    * This is most useful when given a link to a dashboard page
-   * @param string $url 
-   * @return string 
+   * @param string $url
+   * @return string
    */
   public function maybeGetUUIDFromURL(string $url): string
   {
@@ -208,9 +209,9 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
   /**
    * Runs the command to unfreeze a site.
-   * 
-   * @return $this
-   * @throws Exception If the workflow fails.
+   *
+   * @return self
+   * @throws TerminusException If the workflow fails.
    */
   private function thaw(): self
   {
@@ -218,6 +219,7 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
       $this->getSiteInstance()->getWorkflows()->create('unfreeze_site');
     } catch (TerminusException $ex) {
       $this->io()->error($ex->getMessage());
+      throw $ex;
     }
 
     return $this;
@@ -225,8 +227,8 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
 
   /**
    * Shows a friendly message about the frozen status of the site.
-   * 
-   * @return $this 
+   *
+   * @return self
    */
   private function showFrozenMessage(): self
   {
@@ -239,9 +241,9 @@ class SiteDefrostCommand extends SiteCommand implements SiteAwareInterface
   /**
    * Runs the commands to unfreeze a site.
    *
-   * @return $this
+   * @return self
    */
-  private function runner()
+  private function runner(): self
   {
     $link_msg = sprintf('Visit https://dev-%s.pantheonsite.io/ to view the site.', $this->getSiteName());
 
