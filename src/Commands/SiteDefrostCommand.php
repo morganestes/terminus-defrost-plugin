@@ -13,8 +13,13 @@ use DateTimeImmutable;
 use DateTimeInterface;
 use Exception;
 use GuzzleHttp\Exception\GuzzleException;
+use Pantheon\Terminus\Friends\SiteTrait;
 use Pantheon\Terminus\Commands\{Site\SiteCommand, WorkflowProcessingTrait};
-use Pantheon\Terminus\Exceptions\{TerminusException, TerminusNotFoundException, TerminusProcessException};
+use Pantheon\Terminus\Exceptions\{TerminusException,
+    TerminusNotFoundException,
+    TerminusProcessException,
+    TerminusUnsupportedSiteException
+};
 use Pantheon\Terminus\Models\{Site, Workflow};
 use Symfony\Component\Console\Input\InputInterface;
 use Psr\Container\{ContainerExceptionInterface, NotFoundExceptionInterface};
@@ -25,62 +30,44 @@ use Psr\Container\{ContainerExceptionInterface, NotFoundExceptionInterface};
 class SiteDefrostCommand extends SiteCommand
 {
     use WorkflowProcessingTrait;
+    use SiteTrait;
 
     /**
      * A regular expression for matching a UUID.
      */
-    private const UUID_REGEX = '/[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}/i';
+    private const string UUID_REGEX = '/[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}/i';
 
-    /**
-     * The current site instance.
-     */
-    private Site $site;
+    protected const string PLATFORM_DOMAIN = 'pantheonsite.io';
 
     /**
      * Gets the site name for this run.
      *
      * @return string The normalized site name.
      */
-    protected function getSiteName(): string
+    public function getSiteName(): string
     {
-        return $this->site->getName();
+        return $this->getSite()->getName();
     }
 
+
     /**
-     * Sets up an instance of the Pantheon site.
+     * Gets the domain used by Pantheon for platform URLs.
      *
-     * @param string $nameOrUUID The site name or UUID.
-     * @throws TerminusNotFoundException
+     * @return string
      */
-    protected function setSite(string $nameOrUUID): void
+    public function getPlatformDomain(): string
     {
-        $io = $this->io();
-        $logger = $this->log();
-
-        try {
-            $this->site = $this->sites()->get($nameOrUUID);
-        } catch (GuzzleException|TerminusException|NotFoundExceptionInterface|ContainerExceptionInterface $e) {
-            $logger->critical('Could not find the site identified by {siteName}.', [
-                'siteName' => $nameOrUUID,
-            ]);
-            $io->error($e->getMessage());
-
-            if ($io->isDebug()) {
-                $logger->debug($e->getTraceAsString());
+        if ($this->getSite() instanceof Site) {
+            try {
+                return $this->getEnv($this->getSiteName(), 'dev')->get('dns_zone');
+            } catch (GuzzleException|TerminusNotFoundException|TerminusException|NotFoundExceptionInterface|ContainerExceptionInterface $e) {
+                $this->io()->info(
+                    sprintf("%s%sDefaulting to %s%s", $e->getMessage(), PHP_EOL, self::PLATFORM_DOMAIN, PHP_EOL)
+                );
             }
-
-            throw new TerminusNotFoundException(message: $e->getMessage(), code: $e->getCode());
         }
-    }
 
-    /**
-     * Gets the current instance of the site for this command run.
-     *
-     * @return Site The Pantheon site instance.
-     */
-    protected function getSite(): Site
-    {
-        return $this->site;
+        return self::PLATFORM_DOMAIN;
     }
 
     /**
@@ -88,36 +75,40 @@ class SiteDefrostCommand extends SiteCommand
      *
      * @hook init site:defrost
      *
-     * @param \Symfony\Component\Console\Input\InputInterface $input
+     * @param InputInterface $input
      */
     public function normalizeSiteName(InputInterface $input): void
     {
-        $originalInput = trim($input->getArgument('site'));
+        $site_name = $input->getArgument('site_name');
+        if (empty($site_name)) {
+            $input->setInteractive(true);
+            return;
+        }
+        $originalInput = trim($site_name);
         $siteIdentifier = $originalInput;
 
         // 1. Check if it's a UUID. If so, we're done.
         if ($this->isUUID($originalInput)) {
-            $input->setArgument('site', $originalInput);
+            $input->setArgument('site_name', $originalInput);
             return;
         }
 
         // 2. Check if it's a URL and parse it.
         $urlParts = parse_url($originalInput);
+
         if (is_array($urlParts) && isset($urlParts['host'])) {
             // 2a. Handle Pantheon Dashboard URLs (e.g., https://dashboard.pantheon.io/sites/UUID)
-            if (str_ends_with($urlParts['host'], 'dashboard.pantheon.io')) {
-                if (isset($urlParts['path'])) {
-                    // Match /sites/{uuid} or /.../cms-site/{uuid} while ignoring workspace UUIDs.
-                    $uuidPattern = trim(self::UUID_REGEX, '/i');
-                    $dashboardPathRegex = '#/(?:sites|cms-site)/(' . $uuidPattern . ')#i';
-                    if (preg_match($dashboardPathRegex, $urlParts['path'], $matches)) {
-                        $siteIdentifier = $matches[1];
-                    }
+            if (str_ends_with($urlParts['host'], 'dashboard.pantheon.io') && isset($urlParts['path'])) {
+                // Match /sites/{uuid} or /.../cms-site/{uuid} while ignoring workspace UUIDs.
+                $uuidPattern = trim(self::UUID_REGEX, '/i');
+                $dashboardPathRegex = '#/(?:sites|cms-site)/(' . $uuidPattern . ')#i';
+                if (preg_match($dashboardPathRegex, $urlParts['path'], $matches)) {
+                    $siteIdentifier = $matches[1];
                 }
             } // 2b. Handle Pantheon Platform URLs (e.g., https://dev-my-site.pantheonsite.io)
-            elseif (str_ends_with($urlParts['host'], '.pantheonsite.io')) {
+            elseif (str_ends_with($urlParts['host'], $this->getPlatformDomain())) {
                 // Remove the .pantheonsite.io suffix.
-                $subdomain = str_replace('.pantheonsite.io', '', $urlParts['host']);
+                $subdomain = str_replace(".{$this->getPlatformDomain()}", '', $urlParts['host']);
                 // This regex is intentionally simple. It removes `dev-`, `test-`, or `live-` from the start.
                 // It does not handle multidev environments perfectly, as their names are variable.
                 // For `multidev-foo-bar-site`, it would need to know the site name `bar-site` to parse correctly,
@@ -139,7 +130,7 @@ class SiteDefrostCommand extends SiteCommand
             $siteIdentifier = $originalInput;
         }
 
-        $input->setArgument('site', $siteIdentifier);
+        $input->setArgument('site_name', $siteIdentifier);
     }
 
     /**
@@ -157,9 +148,12 @@ class SiteDefrostCommand extends SiteCommand
      * Checks to be sure it worked.
      *
      * @hook post-command site:defrost
+     *
+     * @param mixed $result            The result of the command.
+     * @param CommandData $commandData The command data.
      * @throws TerminusException
      */
-    public function done($result, CommandData $commandData): void
+    public function done(mixed $result, CommandData $commandData): void
     {
         if ($this->io()->isDebug()) {
             /** @noinspection ForgottenDebugOutputInspection */
@@ -168,8 +162,10 @@ class SiteDefrostCommand extends SiteCommand
         }
         if ($this->io()->isVerbose()) {
             /** @noinspection DebugFunctionUsageInspection */
-            $this->stderr()->write(var_export($result, return: true));
+            $this->stderr()->write((string)var_export($result, return: true));
         }
+
+        $this->getSite()->fetch();
 
         // If the $site property is not initialized, it means the command failed
         // before the main logic could run (e.g., site not found).
@@ -178,36 +174,50 @@ class SiteDefrostCommand extends SiteCommand
         if (!isset($this->site)) {
             return;
         }
-        if ($this->getSite()->isFrozen()) {
-            throw new TerminusException('{site} is still frozen.', ['site' => $this->getSiteName()]);
-        }
 
-        $chilly = $this->getSite()->isFrozen() ? 'yes' : 'no';
-        $this->io()->note(sprintf('Is %s frozen? %s', $this->getSiteName(), $chilly));
+        if ($this->getSite()->isFrozen()) {
+            $commandData->output()->write([
+                "Hmmm, Terminus thinks {$this->getSiteName()} is still frozen.",
+            ]);
+//            throw new TerminusException('{site} is still frozen.', ['site' => $this->getSiteName()]);
+        }
     }
 
     /**
      * Unfreezes a Pantheon website for a given name, URL, or Site ID.
      *
      * @authorize
+     * @interact
      *
      * @command site:defrost
      * @aliases site:thaw, site:unfreeze
      * @usage   terminus site:defrost <site>
      *
-     * @param string $site Site name, URL, or ID to unfreeze.
+     * @param string $site_name Site name, URL, or ID to unfreeze.
+     * @throws ContainerExceptionInterface
+     * @throws GuzzleException
+     * @throws NotFoundExceptionInterface
      * @throws TerminusException
      * @throws TerminusProcessException
+     * @throws TerminusUnsupportedSiteException
      */
-    public function siteDefrost(string $site): void
+    public function siteDefrost(string $site_name): void
     {
+        $this->setSite($this->getSiteById($site_name));
+
         if (!$this->getSite()->isFrozen()) {
-            $this->io()->note([
-                "No need to thaw, {$this->getSiteName()} isn't frozen.",
-                "If you don't see the site loading, try again later. It can take up to 15 minutes to thaw.",
-                sprintf('Visit https://dev-%s.pantheonsite.io/ to view the site.', $this->getSiteName()),
-            ]);
-            return;
+            try {
+                $domain = $this->getEnv($site_name, 'dev')->domain();
+                $this->io()->note([
+                    "No need to thaw, {$this->getSiteName()} isn't frozen.",
+                    "If you don't see the site loading, try again later. It can take up to 15 minutes to thaw.",
+                    "Visit https://{$domain} to view the site.",
+                ]);
+                return;
+            } catch (GuzzleException|TerminusNotFoundException|TerminusException|NotFoundExceptionInterface|ContainerExceptionInterface $e) {
+                $this->io()->error($e->getMessage());
+                throw new TerminusProcessException(message: $e->getMessage(), code: $e->getCode());
+            }
         }
 
         $this->io()->info(sprintf('Thawing %s...', $this->getSiteName()));
@@ -255,10 +265,10 @@ class SiteDefrostCommand extends SiteCommand
     private function pollWorkflow(Workflow $workflow): void
     {
         do {
-            sleep(30);
+            sleep(60);
             $workflow->fetch(); // Refresh workflow data to get the latest status.
 
-            $logTime = (new DateTimeImmutable())->format(DateTimeInterface::RFC3339);
+            $logTime = new DateTimeImmutable()->format(DateTimeInterface::RFC3339);
             $this->io()->info(sprintf('[%s] %s', $logTime, $workflow->getStatus()));
         } while (!$workflow->isFinished());
     }
@@ -266,7 +276,7 @@ class SiteDefrostCommand extends SiteCommand
     /**
      * Reports the final status of the workflow.
      *
-     * @param Workflow $workflow The workflow to report on.
+     * @param Workflow $workflow               The workflow to report on.
      * @param DateTimeImmutable $startDateTime The time the process started.
      * @throws TerminusException
      */
@@ -275,20 +285,26 @@ class SiteDefrostCommand extends SiteCommand
         // Ensure we have the final workflow state.
         $workflow->fetch();
 
-        $finalLogTime = (new DateTimeImmutable())->format(DateTimeInterface::RFC3339);
+        $finalLogTime = new DateTimeImmutable()->format(DateTimeInterface::RFC3339);
 
         if ($workflow->isSuccessful()) {
-            $elapsedMessage = $this->getElapsedMessage(
-                $startDateTime,
-                $workflow->getFinishedAt(),
-                'completed in %s'
-            );
-            $this->io()->success([
-                sprintf('[%s] Unfreeze successful! (%s)', $finalLogTime, $elapsedMessage),
-                $workflow->getMessage(),
-                "Dashboard URL: {$this->getSite()->dashboardUrl()}",
-                "Site URL: https://dev-{$this->getSiteName()}.pantheonsite.io/",
-            ]);
+            try {
+                $domain = $this->getEnv($this->getSiteName(), 'dev')->domain();
+                $elapsedMessage = $this->getElapsedMessage(
+                    $startDateTime,
+                    $workflow->getFinishedAt(),
+                    'completed in %s'
+                );
+                $this->io()->success([
+                    sprintf('[%s] Unfreeze successful! (%s)', $finalLogTime, $elapsedMessage),
+                    $workflow->getMessage(),
+                    "Dashboard URL: {$this->getSite()->dashboardUrl()}",
+                    "Site URL: https://{$domain}",
+                ]);
+            } catch (GuzzleException|TerminusNotFoundException|TerminusException|NotFoundExceptionInterface|ContainerExceptionInterface $e) {
+                $this->io()->error($e->getMessage());
+                throw new TerminusProcessException(message: $e->getMessage(), code: $e->getCode());
+            }
         } else {
             $elapsedMessage = $this->getElapsedMessage(
                 $startDateTime,
@@ -315,12 +331,13 @@ class SiteDefrostCommand extends SiteCommand
         int|null $finishTimestamp,
         string $format
     ): string {
-        $endDateTime = $finishTimestamp
-            ? DateTimeImmutable::createFromFormat('U', (string)$finishTimestamp)
-            : new DateTimeImmutable();
+        $endDateTime = null;
+        if ($finishTimestamp !== null) {
+            $endDateTime = DateTimeImmutable::createFromFormat('U', (string)$finishTimestamp);
+        }
 
+        // If finish timestamp was not provided or was invalid, use now.
         if (!$endDateTime) {
-            // Fallback if createFromFormat fails.
             $endDateTime = new DateTimeImmutable();
         }
 
