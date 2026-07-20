@@ -30,10 +30,14 @@
     "php": "8.2-stable - 8.4-stable"
   },
   "require-dev": {
-    "pantheon-systems/terminus": "^3.0 || ^4.0"
+    "pantheon-systems/terminus": "^3.0 || ^4.0",
+    "phpunit/phpunit": "^12.5"
   },
   "autoload": {
     "psr-4": { "MorganEstes\\Terminus\\": "src" }
+  },
+  "autoload-dev": {
+    "psr-4": { "MorganEstes\\Terminus\\Tests\\": "tests" }
   },
   "extra": {
     "terminus": { "compatible-version": "^3.0 || ^4.0" }

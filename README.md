@@ -1,34 +1,38 @@
 # Terminus Site Defrost Plugin
 
-[![Terminus v2.x Compatible](https://img.shields.io/badge/terminus-v2.x-green.svg)](https://github.com/morganestes/terminus-defrost-plugin)
+[![Terminus v3.x/4.x Compatible](https://img.shields.io/badge/terminus-v3.x%20%7C%7C%20v4.x-green.svg)](https://github.com/pantheon-systems/terminus)
 
 Terminus plugin to defrost a [frozen Pantheon website](https://pantheon.io/docs/platform-considerations#inactive-site-freezing).
 
 ## Examples (with aliases)
 ### Site name
-```
-$ terminus site:defrost my-cool-site
+```bash
+terminus site:defrost my-cool-site
 ```
 
-### URL
+### Platform URL
+```bash
+terminus site:thaw https://dev-my-cool-site.pantheonsite.io/
 ```
-$ terminus site:thaw https://dev-my-cool-site.pantheonsite.io/
+
+### Dashboard URL
+```bash
+terminus thaw https://dashboard.pantheon.io/workspace/{org-uuid}/cms-site/{site-uuid}/frozen
 ```
 
 ### ID/UUID
-```
-$ terminus site:unfreeze de305d54-75b4-431b-adb2-eb6b9e546014
+```bash
+terminus site:unfreeze de305d54-75b4-431b-adb2-eb6b9e546014
 ```
 
 ## Installation
 For help installing, see [Manage Plugins](https://pantheon.io/docs/terminus/plugins/)
-```
-mkdir -p ~/.terminus/plugins
-composer create-project -d ~/.terminus/plugins morganestes/terminus-defrost-plugin:~2 --no-dev
+```bash
+terminus self:plugin:install morganestes/terminus-defrost-plugin
 ```
 
 ## Help
-Run `terminus list site` for a complete list of available commands. Use `terminus help <command>` to get help on one command.
+Run `terminus help site:defrost` for a list of options.
 
 ## Credits
 Based on the Snowman plugin at https://github.com/terminus-plugin-project/terminus-snowman-plugin.
