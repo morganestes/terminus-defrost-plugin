@@ -268,7 +268,7 @@ class SiteDefrostCommand extends SiteCommand
             sleep(60);
             $workflow->fetch(); // Refresh workflow data to get the latest status.
 
-            $logTime = new DateTimeImmutable()->format(DateTimeInterface::RFC3339);
+            $logTime = (new DateTimeImmutable())->format(DateTimeInterface::RFC3339);
             $this->io()->info(sprintf('[%s] %s', $logTime, $workflow->getStatus()));
         } while (!$workflow->isFinished());
     }
@@ -285,7 +285,7 @@ class SiteDefrostCommand extends SiteCommand
         // Ensure we have the final workflow state.
         $workflow->fetch();
 
-        $finalLogTime = new DateTimeImmutable()->format(DateTimeInterface::RFC3339);
+        $finalLogTime = (new DateTimeImmutable())->format(DateTimeInterface::RFC3339);
 
         if ($workflow->isSuccessful()) {
             try {
